@@ -19,11 +19,10 @@ from AbhiXMusic.utils.formatters import time_to_seconds
 import config
 from os import getenv
 
-# -----------------------------
-# 🔥 DimpiAPI Configuration
-# -----------------------------
-API_URL = getattr(config, 'YOUR_API_URL', getenv("YOUR_API_URL", 'https://myloveisdimpi.online'))
-API_KEY = getattr(config, 'YOUR_API_KEY', getenv("YOUR_API_KEY", 'DIMPI-SECRET-KEY'))
+# 🔥 AUTO-DETECT CONFIG (Crash Fix Logic)
+# Yeh check karega ki config me 'API_URL' hai ya 'YOUR_API_URL'
+API_URL = getattr(config, 'API_URL', getattr(config, 'YOUR_API_URL', getenv("YOUR_API_URL", 'https://myloveisdimpi.online')))
+API_KEY = getattr(config, 'API_KEY', getattr(config, 'YOUR_API_KEY', getenv("YOUR_API_KEY", 'DIMPI-SECRET-KEY')))
 
 # Logging Setup
 logging.basicConfig(
@@ -67,7 +66,11 @@ async def download_via_api(link: str, media_type: str, message: Message = None):
 
     logger.info(f"📡 [API REQUEST] | 👤 {requester} | 🏘 {chat_title} | 🔗 {link}")
     
-    target_endpoint = f"{API_URL}/download"
+    # Remove /download if present to avoid double path
+    base_url = API_URL.rstrip("/")
+    if base_url.endswith("/download"): base_url = base_url.replace("/download", "")
+    target_endpoint = f"{base_url}/download"
+    
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
     async with aiohttp.ClientSession() as session:
@@ -85,7 +88,7 @@ async def download_via_api(link: str, media_type: str, message: Message = None):
                     if status == "success" or status == "done":
                         file_path = data.get("file")
                         filename = os.path.basename(file_path)
-                        stream_url = f"{API_URL}/stream/{filename}"
+                        stream_url = f"{base_url}/stream/{filename}"
                         elapsed = time.time() - start_time
                         logger.info(f"✅ [API SUCCESS] | 🎵 {filename} | ⏱ {elapsed:.2f}s")
                         return stream_url
@@ -136,7 +139,8 @@ class YouTubeAPI:
             if message.entities:
                 for entity in message.entities:
                     if entity.type == MessageEntityType.URL:
-                        text, offset, length = message.text or message.caption, entity.offset, entity.length
+                        text, message.text or message.caption
+                        offset, length = entity.offset, entity.length
                         break
             elif message.caption_entities:
                 for entity in message.caption_entities:
@@ -171,11 +175,9 @@ class YouTubeAPI:
     async def video(self, link: str, videoid: Union[bool, str] = None):
         if videoid: link = self.base + link
         
-        # Try API first
         api_video = await download_via_api(link, "video")
         if api_video: return 1, api_video
 
-        # Fallback Local
         cookie_file = cookie_txt_file()
         if not cookie_file: return 0, "No cookies."
         proc = await asyncio.create_subprocess_exec("yt-dlp", "--cookies", cookie_file, "-g", "-f", "best[height<=?720]", f"{link}", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -225,7 +227,7 @@ class YouTubeAPI:
         start_dl_time = time.time()
         if videoid: link = self.base + link
 
-        # 1. SEARCH LOGIC (Resolve Ghost Links)
+        # 1. SEARCH LOGIC
         if "youtube.com" not in link and "youtu.be" not in link:
             try:
                 results = VideosSearch(link, limit=1)
@@ -233,17 +235,16 @@ class YouTubeAPI:
                 link = res["link"]
             except: pass 
 
-        # 2. API DOWNLOAD (Fixed Trigger)
+        # 2. API DOWNLOAD
         media_type = "video" if (video or songvideo) else "audio"
         try:
-            # Check for ANY youtube link pattern
-            if ("youtube.com" in link or "youtu.be" in link):
+            if "youtube.com" in link or "youtu.be" in link:
                 api_file = await download_via_api(link, media_type, message=mystic)
                 if api_file: return api_file, True
         except Exception as e:
             logger.error(f"API Trigger Failed: {e}")
 
-        # 3. LOCAL DOWNLOAD (Fallback)
+        # 3. LOCAL DOWNLOAD
         logger.info(f"⬇️ Local Fallback: {link}")
         loop = asyncio.get_running_loop()
         cookies = cookie_txt_file()
@@ -265,7 +266,6 @@ class YouTubeAPI:
                 opts["format"] = "bestvideo+bestaudio/best"
                 opts["merge_output_format"] = "mp4"
             
-            # Smart Search if not direct link
             dl_link = link
             if "youtube.com" not in dl_link and "youtu.be" not in dl_link:
                 dl_link = f"ytsearch1:{dl_link}"
@@ -290,5 +290,4 @@ class YouTubeAPI:
             logger.error(f"❌ Local Download Failed: {e}")
             return None, False
         
-        # 🔥 CRITICAL FIX: Return tuple even if everything fails
         return None, False
