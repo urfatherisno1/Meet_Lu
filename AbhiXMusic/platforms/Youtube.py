@@ -47,7 +47,6 @@ async def download_via_api(link: str, media_type: str, message: Message = None):
     if link.endswith("watch?v=") or not link.startswith("http"): 
         return None
 
-    # Metadata Payload
     payload = {"url": link, "type": media_type, "quality": "best"}
     
     if message:
@@ -59,7 +58,6 @@ async def download_via_api(link: str, media_type: str, message: Message = None):
 
     logger.info(f"📡 [API REQUEST] | 🔗 {link}")
     
-    # Fix URL path
     base_url = API_URL.rstrip("/")
     if base_url.endswith("/download"): base_url = base_url.replace("/download", "")
     target_endpoint = f"{base_url}/download"
@@ -80,15 +78,6 @@ async def download_via_api(link: str, media_type: str, message: Message = None):
                     await asyncio.sleep(2)
             except: pass
     return None
-
-async def check_file_size(link):
-    cookie_file = cookie_txt_file()
-    if not cookie_file: return None
-    try:
-        proc = await asyncio.create_subprocess_exec("yt-dlp", "--cookies", cookie_file, "-J", link, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
-        return json.loads(stdout.decode()) if proc.returncode == 0 else None
-    except: return None
 
 class YouTubeAPI:
     def __init__(self):
@@ -115,38 +104,80 @@ class YouTubeAPI:
         if "watch?v=" in link: return link.split("watch?v=")[1].split("&")[0]
         return None
 
-    # 🔥 NEW: Fallback Search (Enhanced)
+    # 🔥 NEW: 5-STAGE FALLBACK SYSTEM
     async def fallback_details(self, link):
-        try:
-            loop = asyncio.get_running_loop()
-            opts = {
-                "quiet": True, 
-                "no_warnings": True, 
-                "cookiefile": cookie_txt_file(),
-                "extract_flat": True,
-                "force_generic_extractor": False
-            }
+        loop = asyncio.get_running_loop()
+        
+        async def run_ytdlp(options, query):
+            def execution():
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    return ydl.extract_info(query, download=False)
+            try:
+                info = await loop.run_in_executor(None, execution)
+                if 'entries' in info: info = info['entries'][0]
+                return info
+            except: return None
+
+        search_query = link if re.search(self.regex, link) else f"ytsearch1:{link}"
+
+        # Stages 1-4 (Standard yt-dlp attempts)
+        opts_list = [
+            {"quiet": True, "no_warnings": True, "extract_flat": True, "force_generic_extractor": False},
+            {"quiet": True, "no_warnings": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["android"]}}},
+            {"quiet": True, "no_warnings": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["web"]}}},
+            {"quiet": True, "no_warnings": True, "cookiefile": cookie_txt_file(), "extract_flat": True, "force_generic_extractor": False}
+        ]
+
+        for idx, opts in enumerate(opts_list):
+            info = await run_ytdlp(opts, search_query)
+            if info:
+                title = info.get("title")
+                vidid = info.get("id")
+                dur = int(info.get("duration", 0) or 0)
+                dur_min = f"{dur // 60}:{dur % 60:02d}"
+                thumb = info.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
+                return title, dur_min, dur, thumb, vidid
+            logger.warning(f"⚠️ Stage {idx+1} failed...")
+
+        # 🔹 Stage 5: SPY MODE (Scrape HTML for Title & Duration)
+        logger.error(f"❌ All yt-dlp stages failed. Trying HTML Scraper for: {link}")
+        clean_id = self.extract_id(link)
+        if clean_id:
+            try:
+                headers = {
+                    "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+                    "Accept-Language": "en-US,en;q=0.9"
+                }
+                url = f"https://www.youtube.com/watch?v={clean_id}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=10) as resp:
+                        text = await resp.text()
+                        
+                        # 1. Steal Title
+                        title_match = re.search(r'<meta property="og:title" content="(.*?)">', text)
+                        if title_match:
+                            title = title_match.group(1)
+                            thumb = f"https://img.youtube.com/vi/{clean_id}/hqdefault.jpg"
+                            
+                            # 2. Steal Duration (lengthSeconds)
+                            dur_sec = 0
+                            dur_min = "0:00"
+                            dur_match = re.search(r'"lengthSeconds":"(\d+)"', text)
+                            if dur_match:
+                                dur_sec = int(dur_match.group(1))
+                                m, s = divmod(dur_sec, 60)
+                                dur_min = f"{m}:{s:02d}"
+                            
+                            logger.info(f"✅ SPY MODE SUCCESS: Found '{title}' | Dur: {dur_min}")
+                            return title, dur_min, dur_sec, thumb, clean_id
+            except Exception as e:
+                logger.error(f"Scraper failed: {e}")
+
+            # Final Blind Fallback
+            logger.error("❌ Scraper also failed. Using Blind Mode.")
+            return f"YouTube ID: {clean_id}", "0:00", 0, f"https://i.ytimg.com/vi/{clean_id}/hqdefault.jpg", clean_id
             
-            search_query = link if re.search(self.regex, link) else f"ytsearch1:{link}"
-
-            def get_info():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(search_query, download=False)
-                    return info['entries'][0] if 'entries' in info else info
-
-            info = await loop.run_in_executor(None, get_info)
-            if not info: return None, None, None, None, None
-
-            title = info.get("title")
-            vidid = info.get("id")
-            dur = int(info.get("duration", 0) or 0)
-            dur_min = f"{dur // 60}:{dur % 60:02d}"
-            thumb = info.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
-            
-            return title, dur_min, dur, thumb, vidid
-        except Exception as e:
-            logger.error(f"❌ Fallback Failed: {e}")
-            return None, None, None, None, None
+        return None, None, None, None, None
 
     async def track(self, link: str, videoid: Union[bool, str] = None):
         if videoid: link = self.base + link
@@ -163,12 +194,18 @@ class YouTubeAPI:
         except:
             pass
         
-        logger.info(f"⚠️ Standard Search Failed for {link}, trying yt-dlp (FLAT)...")
+        logger.info(f"⚠️ Standard Search Failed for {link}, entering Multi-Stage Fallback...")
         t, dm, _, th, vi = await self.fallback_details(link)
         if t:
             return {"title": t, "link": self.base + vi, "vidid": vi, "duration_min": dm, "thumb": th}, vi
         
-        raise Exception("Track not found on YouTube.")
+        return {
+            "title": "Link Queued", 
+            "link": link, 
+            "vidid": clean_id if clean_id else "", 
+            "duration_min": "0:00", 
+            "thumb": "https://telegra.ph/file/557ee73df9dbdfd62c906.jpg"
+        }, ""
 
     async def details(self, link: str, videoid: Union[bool, str] = None):
         if videoid: link = self.base + link
@@ -221,21 +258,21 @@ class YouTubeAPI:
             except: 
                 return None, False
 
-        # Try API
+        # 2. API DOWNLOAD
         media_type = "video" if (video or songvideo) else "audio"
         try:
             api_file = await download_via_api(link, media_type, message=mystic)
             if api_file: return api_file, True
         except: pass
 
-        # Local Fallback
+        # 3. LOCAL DOWNLOAD
         loop = asyncio.get_running_loop()
         def local_dl():
-            # 🔥 SWITCH TO ANDROID CLIENT (Better Success Rate)
             opts = {
-                "outtmpl": "downloads/%(id)s.%(ext)s", "quiet": True, 
-                "cookiefile": cookie_txt_file(), "nocheckcertificate": True,
-                "extractor_args": {"youtube": {"player_client": ["android"]}}
+                "outtmpl": "downloads/%(id)s.%(ext)s", 
+                "quiet": True, 
+                "cookiefile": cookie_txt_file(), 
+                "nocheckcertificate": True
             }
             if media_type == "audio":
                 opts.update({"format": "bestaudio/best", "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}]})
