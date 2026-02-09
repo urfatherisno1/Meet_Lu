@@ -104,7 +104,7 @@ class YouTubeAPI:
         if "watch?v=" in link: return link.split("watch?v=")[1].split("&")[0]
         return None
 
-    # 🔥 NEW: 5-STAGE FALLBACK SYSTEM
+    # 🔥 NEW: FAST 3-STAGE FALLBACK SYSTEM
     async def fallback_details(self, link):
         loop = asyncio.get_running_loop()
         
@@ -120,27 +120,36 @@ class YouTubeAPI:
 
         search_query = link if re.search(self.regex, link) else f"ytsearch1:{link}"
 
-        # Stages 1-4 (Standard yt-dlp attempts)
-        opts_list = [
-            {"quiet": True, "no_warnings": True, "extract_flat": True, "force_generic_extractor": False},
-            {"quiet": True, "no_warnings": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["android"]}}},
-            {"quiet": True, "no_warnings": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["web"]}}},
-            {"quiet": True, "no_warnings": True, "cookiefile": cookie_txt_file(), "extract_flat": True, "force_generic_extractor": False}
-        ]
+        # 🔹 Stage 1: FAST FLAT (No Cookies)
+        # Most videos work here instantly.
+        opts_flat = {
+            "quiet": True, "no_warnings": True, "extract_flat": True, "force_generic_extractor": False
+        }
+        info = await run_ytdlp(opts_flat, search_query)
+        
+        # 🔹 Stage 2: COOKIES + FLAT
+        # Fixes "Pal Pal" & "Sign in" issues efficiently.
+        if not info:
+            logger.warning("⚠️ Stage 1 failed, trying Stage 2 (Cookies)...")
+            opts_cookie_flat = {
+                "quiet": True, "no_warnings": True, "cookiefile": cookie_txt_file(),
+                "extract_flat": True, 
+                "force_generic_extractor": False
+            }
+            info = await run_ytdlp(opts_cookie_flat, search_query)
 
-        for idx, opts in enumerate(opts_list):
-            info = await run_ytdlp(opts, search_query)
-            if info:
-                title = info.get("title")
-                vidid = info.get("id")
-                dur = int(info.get("duration", 0) or 0)
-                dur_min = f"{dur // 60}:{dur % 60:02d}"
-                thumb = info.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
-                return title, dur_min, dur, thumb, vidid
-            logger.warning(f"⚠️ Stage {idx+1} failed...")
+        # Process Result (If Stage 1 or 2 worked)
+        if info:
+            title = info.get("title")
+            vidid = info.get("id")
+            dur = int(info.get("duration", 0) or 0)
+            dur_min = f"{dur // 60}:{dur % 60:02d}"
+            thumb = info.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
+            return title, dur_min, dur, thumb, vidid
 
-        # 🔹 Stage 5: SPY MODE (Scrape HTML for Title & Duration)
-        logger.error(f"❌ All yt-dlp stages failed. Trying HTML Scraper for: {link}")
+        # 🔹 Stage 3: SPY MODE (Scraper)
+        # Fixes "Bol Kaffara" when yt-dlp fails completely.
+        logger.error(f"❌ yt-dlp failed. Activating SPY MODE for: {link}")
         clean_id = self.extract_id(link)
         if clean_id:
             try:
@@ -159,7 +168,7 @@ class YouTubeAPI:
                             title = title_match.group(1)
                             thumb = f"https://img.youtube.com/vi/{clean_id}/hqdefault.jpg"
                             
-                            # 2. Steal Duration (lengthSeconds)
+                            # 2. Steal Duration
                             dur_sec = 0
                             dur_min = "0:00"
                             dur_match = re.search(r'"lengthSeconds":"(\d+)"', text)
@@ -168,13 +177,13 @@ class YouTubeAPI:
                                 m, s = divmod(dur_sec, 60)
                                 dur_min = f"{m}:{s:02d}"
                             
-                            logger.info(f"✅ SPY MODE SUCCESS: Found '{title}' | Dur: {dur_min}")
+                            logger.info(f"✅ SPY MODE SUCCESS: '{title}' | {dur_min}")
                             return title, dur_min, dur_sec, thumb, clean_id
             except Exception as e:
                 logger.error(f"Scraper failed: {e}")
 
             # Final Blind Fallback
-            logger.error("❌ Scraper also failed. Using Blind Mode.")
+            logger.error("❌ Scraper failed. Using Blind Mode.")
             return f"YouTube ID: {clean_id}", "0:00", 0, f"https://i.ytimg.com/vi/{clean_id}/hqdefault.jpg", clean_id
             
         return None, None, None, None, None
@@ -184,6 +193,7 @@ class YouTubeAPI:
         clean_id = self.extract_id(link)
         if clean_id: link = self.base + clean_id
 
+        # 1. Try Standard Search (Fastest)
         try:
             results = VideosSearch(link, limit=1)
             res = (await results.next())["result"][0]
@@ -194,11 +204,13 @@ class YouTubeAPI:
         except:
             pass
         
-        logger.info(f"⚠️ Standard Search Failed for {link}, entering Multi-Stage Fallback...")
+        # 2. Fallback Logic
+        logger.info(f"⚠️ Standard Search Failed for {link}, entering Fast Fallback...")
         t, dm, _, th, vi = await self.fallback_details(link)
         if t:
             return {"title": t, "link": self.base + vi, "vidid": vi, "duration_min": dm, "thumb": th}, vi
         
+        # 🛑 Final Safe Return
         return {
             "title": "Link Queued", 
             "link": link, 
