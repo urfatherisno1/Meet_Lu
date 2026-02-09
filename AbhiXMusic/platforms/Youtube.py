@@ -104,7 +104,7 @@ class YouTubeAPI:
         if "watch?v=" in link: return link.split("watch?v=")[1].split("&")[0]
         return None
 
-    # 🔥 NEW: FAST 3-STAGE FALLBACK SYSTEM
+    # 🔥 NEW: SUPER FAST FALLBACK (Cookies Priority)
     async def fallback_details(self, link):
         loop = asyncio.get_running_loop()
         
@@ -120,25 +120,25 @@ class YouTubeAPI:
 
         search_query = link if re.search(self.regex, link) else f"ytsearch1:{link}"
 
-        # 🔹 Stage 1: FAST FLAT (No Cookies)
-        # Most videos work here instantly.
-        opts_flat = {
-            "quiet": True, "no_warnings": True, "extract_flat": True, "force_generic_extractor": False
+        # 🔹 Stage 1: COOKIES + FLAT (The "Golden Key")
+        # यह सबसे पावरफुल है। यह "Sign in" और "Format Error" दोनों को एक साथ हरा देगा।
+        # अब Bol Kaffara भी यहीं पास हो जाएगा।
+        opts_cookie_flat = {
+            "quiet": True, "no_warnings": True, "cookiefile": cookie_txt_file(),
+            "extract_flat": True, "force_generic_extractor": False
         }
-        info = await run_ytdlp(opts_flat, search_query)
+        info = await run_ytdlp(opts_cookie_flat, search_query)
         
-        # 🔹 Stage 2: COOKIES + FLAT
-        # Fixes "Pal Pal" & "Sign in" issues efficiently.
+        # 🔹 Stage 2: FLAT NO COOKIES (Backup)
+        # अगर कुकीज खराब हुईं, तो यह बैकअप है।
         if not info:
-            logger.warning("⚠️ Stage 1 failed, trying Stage 2 (Cookies)...")
-            opts_cookie_flat = {
-                "quiet": True, "no_warnings": True, "cookiefile": cookie_txt_file(),
-                "extract_flat": True, 
-                "force_generic_extractor": False
+            logger.warning("⚠️ Stage 1 (Cookies) failed, trying Stage 2 (No Cookies)...")
+            opts_flat = {
+                "quiet": True, "no_warnings": True, "extract_flat": True, "force_generic_extractor": False
             }
-            info = await run_ytdlp(opts_cookie_flat, search_query)
+            info = await run_ytdlp(opts_flat, search_query)
 
-        # Process Result (If Stage 1 or 2 worked)
+        # Process Result
         if info:
             title = info.get("title")
             vidid = info.get("id")
@@ -147,8 +147,7 @@ class YouTubeAPI:
             thumb = info.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
             return title, dur_min, dur, thumb, vidid
 
-        # 🔹 Stage 3: SPY MODE (Scraper)
-        # Fixes "Bol Kaffara" when yt-dlp fails completely.
+        # 🔹 Stage 3: SPY MODE (Last Resort Scraper)
         logger.error(f"❌ yt-dlp failed. Activating SPY MODE for: {link}")
         clean_id = self.extract_id(link)
         if clean_id:
@@ -162,13 +161,11 @@ class YouTubeAPI:
                     async with session.get(url, headers=headers, timeout=10) as resp:
                         text = await resp.text()
                         
-                        # 1. Steal Title
                         title_match = re.search(r'<meta property="og:title" content="(.*?)">', text)
                         if title_match:
                             title = title_match.group(1)
                             thumb = f"https://img.youtube.com/vi/{clean_id}/hqdefault.jpg"
                             
-                            # 2. Steal Duration
                             dur_sec = 0
                             dur_min = "0:00"
                             dur_match = re.search(r'"lengthSeconds":"(\d+)"', text)
@@ -182,7 +179,6 @@ class YouTubeAPI:
             except Exception as e:
                 logger.error(f"Scraper failed: {e}")
 
-            # Final Blind Fallback
             logger.error("❌ Scraper failed. Using Blind Mode.")
             return f"YouTube ID: {clean_id}", "0:00", 0, f"https://i.ytimg.com/vi/{clean_id}/hqdefault.jpg", clean_id
             
@@ -193,7 +189,7 @@ class YouTubeAPI:
         clean_id = self.extract_id(link)
         if clean_id: link = self.base + clean_id
 
-        # 1. Try Standard Search (Fastest)
+        # 1. Try Standard Search
         try:
             results = VideosSearch(link, limit=1)
             res = (await results.next())["result"][0]
